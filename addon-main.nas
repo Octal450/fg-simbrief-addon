@@ -237,12 +237,7 @@ var toFlightplan = func (ofp, fp=nil) {
     return fp;
 };
 
-var importFOB = func (ofp) {
-    var unit = ofp.getNode('params/units').getValue();
-    var fuelFactor = ((unit == 'lbs') ? LB2KG : 1);
-
-    # From here on, we'll do everything in kilograms (kg)
-    var fob = ofp.getNode('fuel/plan_ramp').getValue() * fuelFactor;
+var allocateFuelGeneric = func (fob) {
     var unallocated = fob;
     var tankNodes = props.globals.getNode('/consumables/fuel').getChildren('tank');
     var strategy = getprop('sim/simbrief/options/fuel-strategy');
@@ -331,9 +326,32 @@ var importFOB = func (ofp) {
     logprint(4, sprintf("Fuel not allocated: %1.1f kg", unallocated));
 };
 
-var importPayload = func (ofp) {
+var allocateFuel = func (fob) {
+    if (contains(globals, 'simbriefFuelCallback') and
+        typeof(globals['simbriefFuelCallback'] == 'func')) {
+        globals['simbriefFuelCallback'](fob);
+    }
+    else {
+        allocateFuelGeneric(fob);
+    }
+};
+
+var importFOB = func (ofp) {
     var unit = ofp.getNode('params/units').getValue();
-    var factor = ((unit == 'lbs') ? 1 : KG2LB);
+    var fuelFactor = ((unit == 'lbs') ? LB2KG : 1);
+
+    # From here on, we'll do everything in kilograms (kg)
+    var fob = ofp.getNode('fuel/plan_ramp').getValue() * fuelFactor;
+
+    allocateFuel(fob);
+};
+
+var allocatePayloadGeneric = func (cargoWeight, paxWeight) {
+    # Weights are given in kilograms, but we use lbs internally, because that's
+    # how the weight nodes in FG work by default.
+    var cargoUnallocated = cargoWeight * KG2LB;
+    var paxUnallocated = paxWeight * KG2LB;
+
     var weightNodes = [];
     var cargoWeightNodes = [];
     var paxWeightNodes = [];
@@ -371,10 +389,6 @@ var importPayload = func (ofp) {
         return;
     }
 
-    # Everything in lbs
-    var cargoUnallocated = ofp.getNode('weights/cargo').getValue() * factor;
-    var paxUnallocated = ofp.getNode('weights/payload').getValue() * factor - cargoUnallocated;
-
     var distribute = func (what, nodes, unallocated) {
         logprint(3, sprintf("Allocating %s: %1.1f lbs", what, unallocated));
         var totalF = 0;
@@ -410,6 +424,28 @@ var importPayload = func (ofp) {
     }
     cargoUnallocated = distribute("cargo", cargoWeightNodes, cargoUnallocated);
     paxUnallocated = distribute("passengers", paxWeightNodes, paxUnallocated + cargoUnallocated);
+};
+
+var allocatePayload = func (cargoWeight, paxWeight, paxCount) {
+    if (contains(globals, 'simbriefPayloadCallback') and
+        typeof(globals['simbriefPayloadCallback'] == 'func')) {
+        globals['simbriefPayloadCallback'](cargoWeight, paxWeight, paxCount);
+    }
+    else {
+        allocatePayloadGeneric(cargoWeight, paxWeight);
+    }
+};
+
+var importPayload = func (ofp) {
+    var unit = ofp.getNode('params/units').getValue();
+    var factor = ((unit == 'lbs') ? LB2KG : 1);
+
+    # Everything in kg
+    var cargoWeight = ofp.getNode('weights/cargo').getValue() * factor;
+    var paxWeight = ofp.getNode('weights/payload').getValue() * factor - cargoWeight;
+    var paxCount = ofp.getNode('general/passengers').getValue();
+
+    allocatePayload(cargoWeight, paxWeight, paxCount);
 };
 
 var importPerfInit = func (ofp) {
@@ -622,16 +658,24 @@ var loadFP = func () {
             return;
         }
 
-        if (getprop('/sim/simbrief/options/import-fp') or 0) {
-            var modifyableFlightplan = getFlightplan(1);
-            var fp = toFlightplan(ofpNode, modifyableFlightplan);
-            if (fp == nil) {
-                print("Error parsing flight plan");
-            }
-            else {
-                if (getprop('/sim/simbrief/options/autocommit') or 0) {
-                    commitFlightplan();
+        if (globals['simbrief']['flightplanAvailable'] == 0) {
+            logprint(3, 'Flightplan import disabled by aircraft');
+        }
+        else {
+            if (getprop('/sim/simbrief/options/import-fp') or 0) {
+                var modifyableFlightplan = getFlightplan(1);
+                var fp = toFlightplan(ofpNode, modifyableFlightplan);
+                if (fp == nil) {
+                    print("Error parsing flight plan");
                 }
+                else {
+                    if (getprop('/sim/simbrief/options/autocommit') or 0) {
+                        commitFlightplan();
+                    }
+                }
+            }
+            if (getprop('/sim/simbrief/options/import-perfinit') or 0) {
+                importPerfInit(ofpNode);
             }
         }
         if (getprop('/sim/simbrief/options/import-fob') or 0) {
@@ -639,9 +683,6 @@ var loadFP = func () {
         }
         if (getprop('/sim/simbrief/options/import-payload') or 0) {
             importPayload(ofpNode);
-        }
-        if (getprop('/sim/simbrief/options/import-perfinit') or 0) {
-            importPerfInit(ofpNode);
         }
         if (getprop('/sim/simbrief/options/import-winds-aloft') or 0) {
             importWindsAloft(ofpNode);
@@ -665,29 +706,32 @@ var findMenuNode = func (create=0) {
 };
 
 var main = func(addon) {
+    var flightplanAvailable = 1;
     if (globals['simbrief'] != nil) {
         logprint(3, "SimBrief importer already present, not activating add-on");
+        return;
     }
-    elsif (props.globals.getNode('/FMGC/simbrief-username') != nil) {
-        logprint(3, "A320 SimBrief import feature detected, not activating add-on");
+    if (props.globals.getNode('/FMGC/simbrief-username') != nil) {
+        logprint(3, "A320 SimBrief import feature detected, not activating flight plan features");
+        flightplanAvailable = 0;
     }
-    else {
-        logprint(3, "Loading SimBrief importer");
-        globals['simbrief'] = {
-            'loadFP': loadFP,
-            'startAloftUpdater': startAloftUpdater,
-            'stopAloftUpdater': stopAloftUpdater,
-        };
-        var myMenuNode = findMenuNode(1);
-        myMenuNode.setValues({
-            enabled: 'true',
-            name: 'addon-simbrief',
-            label: 'SimBrief Import',
-            binding: {
-                'command': 'dialog-show',
-                'dialog-name': 'addon-simbrief-dialog',
-            },
-        });
-        fgcommand('reinit', {'subsystem': 'gui'});
-    }
+
+    logprint(3, "Loading SimBrief importer");
+    globals['simbrief'] = {
+        'flightplanAvailable': flightplanAvailable,
+        'loadFP': loadFP,
+        'startAloftUpdater': startAloftUpdater,
+        'stopAloftUpdater': stopAloftUpdater,
+    };
+    var myMenuNode = findMenuNode(1);
+    myMenuNode.setValues({
+        enabled: 'true',
+        name: 'addon-simbrief',
+        label: 'SimBrief Import',
+        binding: {
+            'command': 'dialog-show',
+            'dialog-name': 'addon-simbrief-dialog',
+        },
+    });
+    fgcommand('reinit', {'subsystem': 'gui'});
 };

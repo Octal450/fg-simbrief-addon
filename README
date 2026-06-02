@@ -74,7 +74,7 @@ Supported Aircraft Types (as per 09/2021)
 +------------------------+-----+---------+----------+-----------+---------+------+
 | E-Jet-family-YV [6]    | yes | yes     | yes      | yes       | yes     | yes  |
 +------------------------+-----+---------+----------+-----------+---------+------+
-| A320-family [1]        |                         n/a                           |
+| A320-family [1]        |                   n/a                | yes     | yes  |
 +------------------------+-----+---------+----------+-----------+---------+------+
 | 747-8i                 | yes | yes     | yes      | yes       | yes     | yes  |
 +------------------------+-----+---------+----------+-----------+---------+------+
@@ -98,17 +98,18 @@ Supported Aircraft Types (as per 09/2021)
 +------------------------+-----+---------+----------+-----------+---------+------+
 
 [1] - This aircraft already includes a SimBrief import feature, so this addon
-      will either not work or disable itself. Please use the aircraft's
-      built-in SimBrief importer instead.
+      will only provide limited functionality. To import the actual flightplan
+      into the FMS, use the built-in MCDU functionality.
 [2] - Imports cargo, but not passengers, due to nonstandard handling of
       passenger counts.
 [3] - Nonstandard handling of cargo and passengers.
 [4] - Imported flight plan is of limited use, because the aircraft does not
       have an FMS.
 [5] - Currently works, but devs plan to make a custom importer, at which point
-      [1] will apply.
-[6] - Current version (as of 2021-10-17) has its own SimBrief importer, which
-      this addon is based on. The next release of the E-Jet family will not
+      [1] will apply. Some versions of this aircraft will also not handle
+      imported fuel and payload correctly.
+[6] - Older versions (as of 2021-10-17) had their own SimBrief importer, which
+      this addon is based on. The current release of the E-Jet family does not
       include the custom importer anymore, instead requiring you to use this
       addon instead.
 
@@ -148,6 +149,7 @@ compatible:
   This way, the first-come-first-serve strategy will first fill the inboard
   tanks equally; if there is any fuel left, it will then fill the outboard
   tanks equally, and finally, any remaining fuel goes into the center tank.
+  If you need custom fuel loading logic, see below.
 - Passengers and cargo will be distributed over all weight nodes whose names
   look like they're either passenger spaces or cargo holds. Weight nodes that
   contain any of the words "passenger", "cabin", "pax", "class", "baggage" or
@@ -164,6 +166,22 @@ compatible:
        baggage that doesn't fit in the cargo hold can go into the cabin).
     4. The passenger weight is then distributed over the available passenger
        spaces.
+  If you need custom payload logic, see below.
 - If your aircraft requires a custom SimBrief import, simply create a global
   Nasal object or namespace named 'simbrief'; the addon will see that and
-  disable itself.
+  disable all flightplan-related functionality. Fuel, payload, and weather
+  importing will still be available.
+- It is also possible to override only the fuel and payload allocation logic
+  with custom hooks, keeping the rest intact. To do this, define one or both of
+  the following global Nasal functions:
+
+  simbriefFuelCallback(fob);
+
+  This takes block fuel in kilograms, and expects you to configure the aircraft
+  with that amount of fuel loaded up.
+
+  simbriefPayloadCallback(cargoWeight, paxWeight, paxCount);
+
+  This takes cargo and passenger weights in kilograms, and a passenger count.
+  Depending on how your aircraft's payload system works, you may or may not want
+  to ignore the passenger count.
